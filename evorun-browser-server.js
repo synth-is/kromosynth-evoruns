@@ -5,6 +5,7 @@ const cors = require('cors');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const { getRunDB } = require('./evorun-db');
 
 const app = express();
 app.use(cors({ 
@@ -329,6 +330,338 @@ app.get('/evoruns/:evorunPath/files', async (req, res) => {
     console.error('Error listing files:', error);
     res.status(500).json({ 
       error: 'Failed to list files: ' + error.message 
+    });
+  }
+});
+
+// Route to get genome data by ULID from SQLite database
+app.get('/evoruns/:folderName/genome/:ulid', async (req, res) => {
+  try {
+    const { folderName, ulid } = req.params;
+    
+    // Construct the evorun directory path
+    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    
+    // Security check
+    const resolvedPath = path.resolve(evorunPath);
+    const resolvedRoot = path.resolve(CONFIG.rootDirectory);
+    
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied: path outside root directory' });
+    }
+    
+    // Check if directory exists
+    try {
+      await fs.access(evorunPath);
+    } catch (error) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
+    
+    // Get database connection
+    const db = getRunDB(evorunPath);
+    if (!db || !db.hasGenomeDb) {
+      return res.status(404).json({ error: 'Genome database not found for this evorun' });
+    }
+    
+    // Retrieve genome data
+    const genomeData = await db.getGenome(ulid);
+    if (!genomeData) {
+      return res.status(404).json({ error: `Genome not found: ${ulid}` });
+    }
+    
+    res.json({
+      ulid,
+      folderName,
+      genome: genomeData
+    });
+    
+  } catch (error) {
+    console.error('Error retrieving genome:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve genome: ' + error.message 
+    });
+  }
+});
+
+// Route to get feature data by ULID from SQLite database
+app.get('/evoruns/:folderName/features/:ulid', async (req, res) => {
+  try {
+    const { folderName, ulid } = req.params;
+    
+    // Construct the evorun directory path
+    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    
+    // Security check
+    const resolvedPath = path.resolve(evorunPath);
+    const resolvedRoot = path.resolve(CONFIG.rootDirectory);
+    
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied: path outside root directory' });
+    }
+    
+    // Check if directory exists
+    try {
+      await fs.access(evorunPath);
+    } catch (error) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
+    
+    // Get database connection
+    const db = getRunDB(evorunPath);
+    if (!db || !db.hasFeatureDb) {
+      return res.status(404).json({ error: 'Features database not found for this evorun' });
+    }
+    
+    // Retrieve feature data
+    const featureData = await db.getFeature(ulid);
+    if (!featureData) {
+      return res.status(404).json({ error: `Features not found: ${ulid}` });
+    }
+    
+    res.json({
+      ulid,
+      folderName,
+      features: featureData
+    });
+    
+  } catch (error) {
+    console.error('Error retrieving features:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve features: ' + error.message 
+    });
+  }
+});
+
+// Route to get both genome and features data by ULID
+app.get('/evoruns/:folderName/data/:ulid', async (req, res) => {
+  try {
+    const { folderName, ulid } = req.params;
+    
+    // Construct the evorun directory path
+    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    
+    // Security check
+    const resolvedPath = path.resolve(evorunPath);
+    const resolvedRoot = path.resolve(CONFIG.rootDirectory);
+    
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied: path outside root directory' });
+    }
+    
+    // Check if directory exists
+    try {
+      await fs.access(evorunPath);
+    } catch (error) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
+    
+    // Get database connection
+    const db = getRunDB(evorunPath);
+    if (!db) {
+      return res.status(404).json({ error: 'No databases found for this evorun' });
+    }
+    
+    const result = { ulid, folderName };
+    
+    // Try to get genome data
+    if (db.hasGenomeDb) {
+      try {
+        const genomeData = await db.getGenome(ulid);
+        if (genomeData) {
+          result.genome = genomeData;
+        }
+      } catch (error) {
+        console.warn(`Error retrieving genome ${ulid}:`, error.message);
+      }
+    }
+    
+    // Try to get feature data
+    if (db.hasFeatureDb) {
+      try {
+        const featureData = await db.getFeature(ulid);
+        if (featureData) {
+          result.features = featureData;
+        }
+      } catch (error) {
+        console.warn(`Error retrieving features ${ulid}:`, error.message);
+      }
+    }
+    
+    // Check if we found any data
+    if (!result.genome && !result.features) {
+      return res.status(404).json({ error: `No data found for ULID: ${ulid}` });
+    }
+    
+    res.json(result);
+    
+  } catch (error) {
+    console.error('Error retrieving data:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve data: ' + error.message 
+    });
+  }
+});
+
+// Route to list available genome/feature IDs for an evorun
+app.get('/evoruns/:folderName/ids', async (req, res) => {
+  try {
+    const { folderName } = req.params;
+    const { type } = req.query; // 'genomes', 'features', or 'all' (default)
+    
+    // Construct the evorun directory path
+    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    
+    // Security check
+    const resolvedPath = path.resolve(evorunPath);
+    const resolvedRoot = path.resolve(CONFIG.rootDirectory);
+    
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied: path outside root directory' });
+    }
+    
+    // Check if directory exists
+    try {
+      await fs.access(evorunPath);
+    } catch (error) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
+    
+    // Get database connection
+    const db = getRunDB(evorunPath);
+    if (!db) {
+      return res.status(404).json({ error: 'No databases found for this evorun' });
+    }
+    
+    const result = { folderName };
+    
+    // Get genome IDs if requested
+    if (!type || type === 'all' || type === 'genomes') {
+      if (db.hasGenomeDb) {
+        try {
+          result.genomeIds = await db.listAllGenomeIds();
+        } catch (error) {
+          console.warn(`Error listing genome IDs:`, error.message);
+          result.genomeIds = [];
+        }
+      } else {
+        result.genomeIds = [];
+      }
+    }
+    
+    // Get feature IDs if requested
+    if (!type || type === 'all' || type === 'features') {
+      if (db.hasFeatureDb) {
+        try {
+          result.featureIds = await db.listAllFeatureGenomeIds();
+        } catch (error) {
+          console.warn(`Error listing feature IDs:`, error.message);
+          result.featureIds = [];
+        }
+      } else {
+        result.featureIds = [];
+      }
+    }
+    
+    res.json(result);
+    
+  } catch (error) {
+    console.error('Error listing IDs:', error);
+    res.status(500).json({ 
+      error: 'Failed to list IDs: ' + error.message 
+    });
+  }
+});
+
+// Route to list all genome IDs from SQLite database
+app.get('/evoruns/:folderName/genomes', async (req, res) => {
+  try {
+    const { folderName } = req.params;
+    
+    // Construct the evorun directory path
+    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    
+    // Security check
+    const resolvedPath = path.resolve(evorunPath);
+    const resolvedRoot = path.resolve(CONFIG.rootDirectory);
+    
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied: path outside root directory' });
+    }
+    
+    // Get database connection
+    const db = getRunDB(evorunPath);
+    
+    if (!db) {
+      return res.status(404).json({ 
+        error: 'No SQLite databases found for this evorun' 
+      });
+    }
+    
+    if (!db.hasGenomeDb) {
+      return res.status(404).json({ 
+        error: 'No genome database found for this evorun' 
+      });
+    }
+    
+    const genomeIds = await db.listAllGenomeIds();
+    
+    res.json({
+      folderName,
+      genomeIds,
+      count: genomeIds.length
+    });
+    
+  } catch (error) {
+    console.error('Error listing genome IDs:', error);
+    res.status(500).json({ 
+      error: 'Failed to list genome IDs: ' + error.message 
+    });
+  }
+});
+
+// Route to list all feature IDs from SQLite database
+app.get('/evoruns/:folderName/features', async (req, res) => {
+  try {
+    const { folderName } = req.params;
+    
+    // Construct the evorun directory path
+    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    
+    // Security check
+    const resolvedPath = path.resolve(evorunPath);
+    const resolvedRoot = path.resolve(CONFIG.rootDirectory);
+    
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied: path outside root directory' });
+    }
+    
+    // Get database connection
+    const db = getRunDB(evorunPath);
+    
+    if (!db) {
+      return res.status(404).json({ 
+        error: 'No SQLite databases found for this evorun' 
+      });
+    }
+    
+    if (!db.hasFeatureDb) {
+      return res.status(404).json({ 
+        error: 'No feature database found for this evorun' 
+      });
+    }
+    
+    const featureIds = await db.listAllFeatureGenomeIds();
+    
+    res.json({
+      folderName,
+      featureIds,
+      count: featureIds.length
+    });
+    
+  } catch (error) {
+    console.error('Error listing feature IDs:', error);
+    res.status(500).json({ 
+      error: 'Failed to list feature IDs: ' + error.message 
     });
   }
 });
