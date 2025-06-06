@@ -15,6 +15,7 @@ app.use(cors({
 // Configuration
 let CONFIG = {
   rootDirectory: process.env.EVORUN_ROOT_DIR || '/Users/bjornpjo/Developer/apps/kromosynth-cli/cli-app/evoruns',
+  evorenderDirectory: process.env.EVORENDERS_ROOT_DIR || '/Users/bjornpjo/Developer/apps/kromosynth-cli/cli-app/evorenders',
   port: process.env.PORT || 3004,
   dateGranularity: process.env.DATE_GRANULARITY || 'month' // month, week, day
 };
@@ -111,12 +112,43 @@ async function scanEvorunDirectories(rootDir) {
   return evorunFolders;
 }
 
+// Helper function to validate and format render parameters
+function formatRenderParams(duration, pitch, velocity) {
+  // Convert to numbers and validate
+  const dur = parseFloat(duration);
+  const pit = parseInt(pitch);
+  const vel = parseInt(velocity);
+  
+  if (isNaN(dur) || isNaN(pit) || isNaN(vel)) {
+    throw new Error('Invalid render parameters: duration, pitch, and velocity must be numbers');
+  }
+  
+  if (dur <= 0) {
+    throw new Error('Duration must be positive');
+  }
+  
+  if (pit < 0 || pit > 127) {
+    throw new Error('Pitch must be between 0 and 127');
+  }
+  
+  if (vel < 0 || vel > 127) {
+    throw new Error('Velocity must be between 0 and 127');
+  }
+  
+  // Format as expected in filename: duration_pitch_velocity
+  return `${dur}_${pit}_${vel}`;
+}
+
 // Route to set configuration
 app.post('/config', (req, res) => {
-  const { rootDirectory, dateGranularity } = req.body;
+  const { rootDirectory, evorenderDirectory, dateGranularity } = req.body;
   
   if (rootDirectory) {
     CONFIG.rootDirectory = rootDirectory;
+  }
+  
+  if (evorenderDirectory) {
+    CONFIG.evorenderDirectory = evorenderDirectory;
   }
   
   if (dateGranularity && ['day', 'week', 'month'].includes(dateGranularity)) {
@@ -662,6 +694,134 @@ app.get('/evoruns/:folderName/features', async (req, res) => {
     console.error('Error listing feature IDs:', error);
     res.status(500).json({ 
       error: 'Failed to list feature IDs: ' + error.message 
+    });
+  }
+});
+
+// Route to serve rendered WAV files from evorenders directory
+app.get('/evorenders/:folderName/:ulid/:duration/:pitch/:velocity', async (req, res) => {
+  try {
+    const { folderName, ulid, duration, pitch, velocity } = req.params;
+    
+    // Validate and format render parameters
+    let renderParams;
+    try {
+      renderParams = formatRenderParams(duration, pitch, velocity);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    
+    // Construct the WAV filename
+    const wavFileName = `${ulid}-${renderParams}.wav`;
+    
+    // Construct the full path to the WAV file
+    const wavFilePath = path.join(CONFIG.evorenderDirectory, folderName, wavFileName);
+    
+    // Security check: ensure the path is within the evorenders directory
+    const resolvedPath = path.resolve(wavFilePath);
+    const resolvedRoot = path.resolve(CONFIG.evorenderDirectory);
+    
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied: path outside evorenders directory' });
+    }
+    
+    // Check if file exists
+    try {
+      await fs.access(wavFilePath);
+    } catch (error) {
+      return res.status(404).json({ 
+        error: `Rendered WAV file not found: ${wavFileName}`,
+        expectedPath: path.relative(CONFIG.evorenderDirectory, wavFilePath)
+      });
+    }
+    
+    // Check if it's a file (not a directory)
+    const stats = await fs.stat(wavFilePath);
+    if (!stats.isFile()) {
+      return res.status(400).json({ error: 'Path is not a file' });
+    }
+    
+    // Set appropriate headers for WAV files
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Content-Disposition', `inline; filename="${wavFileName}"`);
+    
+    // Serve the WAV file
+    res.sendFile(resolvedPath);
+    
+  } catch (error) {
+    console.error('Error serving rendered WAV file:', error);
+    res.status(500).json({ 
+      error: 'Failed to serve rendered WAV file: ' + error.message 
+    });
+  }
+});
+
+// Route to list available rendered files for a specific evorun folder
+app.get('/evorenders/:folderName/files', async (req, res) => {
+  try {
+    const { folderName } = req.params;
+    
+    const targetPath = path.join(CONFIG.evorenderDirectory, folderName);
+    
+    // Security check
+    const resolvedPath = path.resolve(targetPath);
+    const resolvedRoot = path.resolve(CONFIG.evorenderDirectory);
+    
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied: path outside evorenders directory' });
+    }
+    
+    try {
+      await fs.access(targetPath);
+    } catch (error) {
+      return res.status(404).json({ error: 'Evorender directory not found' });
+    }
+    
+    const entries = await fs.readdir(targetPath, { withFileTypes: true });
+    
+    const wavFiles = [];
+    
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.wav')) {
+        const stats = await fs.stat(path.join(targetPath, entry.name));
+        
+        // Parse the filename to extract ULID and render parameters
+        const match = entry.name.match(/^([A-Z0-9]{26})-(.+)\.wav$/);
+        let parsedParams = null;
+        
+        if (match) {
+          const [, fileUlid, paramString] = match;
+          const paramParts = paramString.split('_');
+          if (paramParts.length === 3) {
+            parsedParams = {
+              ulid: fileUlid,
+              duration: parseFloat(paramParts[0]),
+              pitch: parseInt(paramParts[1]),
+              velocity: parseInt(paramParts[2])
+            };
+          }
+        }
+        
+        wavFiles.push({
+          name: entry.name,
+          size: stats.size,
+          modified: stats.mtime.toISOString(),
+          parameters: parsedParams
+        });
+      }
+    }
+    
+    res.json({
+      folderName,
+      evorenderPath: targetPath,
+      wavFiles: wavFiles.sort((a, b) => a.name.localeCompare(b.name)),
+      count: wavFiles.length
+    });
+    
+  } catch (error) {
+    console.error('Error listing evorender files:', error);
+    res.status(500).json({ 
+      error: 'Failed to list evorender files: ' + error.message 
     });
   }
 });

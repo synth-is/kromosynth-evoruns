@@ -1,10 +1,11 @@
 # Evorun Browser Server
 
-A REST server for browsing evolutionary runs with configurable root directory and flexible organization.
+A REST server for browsing evolutionary runs with configurable root directory and flexible organization, including support for rendered audio files.
 
 ## Features
 
 - **Configurable Root Directory**: Set the root directory containing evolutionary runs via configuration
+- **Evorender File Access**: Serve rendered WAV files from a separate evorenders directory
 - **Recursive Directory Scanning**: Automatically finds evorun folders in subdirectories
 - **ULID-based Dating**: Extracts timestamps from ULID prefixes in folder names
 - **Flexible Grouping**: Groups evoruns by date (month/week/day) and run name
@@ -31,13 +32,14 @@ npm install express cors better-sqlite3
 node evorun-browser-server.js
 
 # With custom configuration via environment variables
-EVORUN_ROOT_DIR=/path/to/evoruns PORT=3005 DATE_GRANULARITY=week node evorun-browser-server.js
+EVORUN_ROOT_DIR=/path/to/evoruns EVORENDERS_ROOT_DIR=/path/to/evorenders PORT=3005 DATE_GRANULARITY=week node evorun-browser-server.js
 ```
 
 ### Configuration Options
 
 The server accepts the following configuration:
 - `rootDirectory`: Root directory containing evolutionary runs
+- `evorenderDirectory`: Root directory containing rendered WAV files
 - `port`: Server port (default: 3004)
 - `dateGranularity`: Date grouping granularity - 'month', 'week', or 'day' (default: 'month')
 
@@ -48,7 +50,7 @@ Configuration can be updated at runtime using the `/config` endpoint:
 ```bash
 curl -X POST http://localhost:3004/config \
   -H "Content-Type: application/json" \
-  -d '{"rootDirectory": "/new/path", "dateGranularity": "week"}'
+  -d '{"rootDirectory": "/new/path", "evorenderDirectory": "/new/renders/path", "dateGranularity": "week"}'
 ```
 
 ## Folder Name Format
@@ -61,6 +63,21 @@ The server expects evorun folders to follow this naming convention:
 **Example:**
 ```
 01JR1C0G2M1K40WFVFT3DS7SBK_evoConf_refSingleEmb_featFocusSwitchPeriodic_mfcc-statistics_pca_retrainIncr50_zScoreNSynthTrain
+```
+
+**Evorender folders follow a similar pattern:**
+```
+{ULID}_{render_config_name}
+```
+
+**Rendered WAV files are named:**
+```
+{ULID}-{duration}_{pitch}_{velocity}.wav
+```
+
+**Example:**
+```
+01HA3SP8S3Q4CXM7WVTX0SKTN9-1.0_0_1.wav
 ```
 
 **Components:**
@@ -84,6 +101,29 @@ const baseURL = 'http://localhost:3004';
 async function getEvorunSummary() {
   const response = await axios.get(`${baseURL}/evoruns/summary?granularity=week`);
   console.log(`Found ${response.data.totalRuns} total runs`);
+  return response.data;
+}
+
+// Get rendered WAV file
+async function getRenderedWav(folderName, ulid, duration, pitch, velocity) {
+  try {
+    const response = await axios.get(
+      `${baseURL}/evorenders/${folderName}/${ulid}/${duration}/${pitch}/${velocity}`,
+      { responseType: 'arraybuffer' }
+    );
+    return response.data; // ArrayBuffer containing WAV data
+  } catch (error) {
+    if (error.response?.status === 404) {
+      console.log('Rendered WAV file not found');
+      return null;
+    }
+    throw error;
+  }
+}
+
+// List available rendered files for an evorun
+async function listRenderedFiles(folderName) {
+  const response = await axios.get(`${baseURL}/evorenders/${folderName}/files`);
   return response.data;
 }
 
@@ -132,6 +172,20 @@ class EvorunClient:
         response.raise_for_status()
         return response.json()
     
+    def get_rendered_wav(self, folder_name, ulid, duration, pitch, velocity):
+        response = requests.get(
+            f'{self.base_url}/evorenders/{folder_name}/{ulid}/{duration}/{pitch}/{velocity}'
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.content  # WAV file bytes
+    
+    def list_rendered_files(self, folder_name):
+        response = requests.get(f'{self.base_url}/evorenders/{folder_name}/files')
+        response.raise_for_status()
+        return response.json()
+    
     def get_genome(self, folder_name, ulid):
         response = requests.get(f'{self.base_url}/evoruns/{folder_name}/genome/{ulid}')
         if response.status_code == 404:
@@ -155,6 +209,17 @@ class EvorunClient:
 client = EvorunClient()
 summary = client.get_summary(granularity='week')
 print(f"Found {summary['totalRuns']} evolutionary runs")
+
+# Get rendered audio for a specific genome
+wav_data = client.get_rendered_wav(
+    '01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0',
+    '01HA3SP8S3Q4CXM7WVTX0SKTN9',
+    1.0, 0, 1
+)
+if wav_data:
+    with open('output.wav', 'wb') as f:
+        f.write(wav_data)
+    print("WAV file saved")
 
 # Get data for the first run found
 if summary['groups']:
@@ -183,10 +248,17 @@ curl http://localhost:3004/health
 # Get evolutionary runs summary with weekly granularity
 curl "http://localhost:3004/evoruns/summary?granularity=week"
 
-# Update server configuration
+# Update server configuration including evorender directory
 curl -X POST http://localhost:3004/config \
   -H "Content-Type: application/json" \
-  -d '{"rootDirectory": "/new/path/to/evoruns", "dateGranularity": "day"}'
+  -d '{"rootDirectory": "/new/path/to/evoruns", "evorenderDirectory": "/new/path/to/evorenders", "dateGranularity": "day"}'
+
+# Download a rendered WAV file
+curl "http://localhost:3004/evorenders/01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0/01HA3SP8S3Q4CXM7WVTX0SKTN9/1.0/0/1" \
+  -o rendered_audio.wav
+
+# List available rendered files for an evorun
+curl "http://localhost:3004/evorenders/01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0/files"
 
 # List files in an evorun directory
 curl "http://localhost:3004/evoruns/01JVFMCCWBFWEW2AYHZ8XVEHY2_evoConf_singleMap_refSingleEmbeddings/files"
@@ -219,6 +291,7 @@ Returns server health status and current configuration.
   "timestamp": "2025-05-27T10:30:45.123Z",
   "config": {
     "rootDirectory": "/path/to/evoruns",
+    "evorenderDirectory": "/path/to/evorenders",
     "port": 3004,
     "dateGranularity": "month"
   }
@@ -232,6 +305,7 @@ Returns current server configuration.
 ```json
 {
   "rootDirectory": "/path/to/evoruns",
+  "evorenderDirectory": "/path/to/evorenders",
   "port": 3004,
   "dateGranularity": "month"
 }
@@ -244,6 +318,7 @@ Updates server configuration.
 ```json
 {
   "rootDirectory": "/path/to/new/root",
+  "evorenderDirectory": "/path/to/new/evorenders",
   "dateGranularity": "week"
 }
 ```
@@ -254,6 +329,7 @@ Updates server configuration.
   "message": "Configuration updated",
   "config": {
     "rootDirectory": "/path/to/new/root",
+    "evorenderDirectory": "/path/to/new/evorenders",
     "port": 3004,
     "dateGranularity": "week"
   }
@@ -291,6 +367,58 @@ GET /evoruns/summary?granularity=week
       ]
     }
   }
+}
+```
+
+### Rendered Audio Files
+
+#### GET /evorenders/:folderName/:ulid/:duration/:pitch/:velocity
+Serves rendered WAV files from the evorenders directory.
+
+**Path Parameters:**
+- `folderName`: The folder name of the evorender directory
+- `ulid`: The ULID of the genome
+- `duration`: Duration parameter (positive number)
+- `pitch`: MIDI pitch value (0-127)
+- `velocity`: MIDI velocity value (0-127)
+
+**Example Request:**
+```
+GET /evorenders/01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0/01HA3SP8S3Q4CXM7WVTX0SKTN9/1.0/0/1
+```
+
+**Response:** WAV file content with `audio/wav` MIME type
+
+#### GET /evorenders/:folderName/files
+Lists available rendered WAV files in an evorender directory.
+
+**Path Parameters:**
+- `folderName`: The folder name of the evorender directory
+
+**Example Request:**
+```
+GET /evorenders/01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0/files
+```
+
+**Response:**
+```json
+{
+  "folderName": "01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0",
+  "evorenderPath": "/path/to/evorenders/01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0",
+  "wavFiles": [
+    {
+      "name": "01HA3SP8S3Q4CXM7WVTX0SKTN9-1.0_0_1.wav",
+      "size": 2048576,
+      "modified": "2024-01-15T10:30:45.123Z",
+      "parameters": {
+        "ulid": "01HA3SP8S3Q4CXM7WVTX0SKTN9",
+        "duration": 1.0,
+        "pitch": 0,
+        "velocity": 1
+      }
+    }
+  ],
+  "count": 1
 }
 ```
 
@@ -575,6 +703,21 @@ All endpoints return standardized error responses:
 }
 ```
 
+**Invalid render parameters:**
+```json
+{
+  "error": "Invalid render parameters: duration, pitch, and velocity must be numbers"
+}
+```
+
+**Rendered WAV file not found:**
+```json
+{
+  "error": "Rendered WAV file not found: 01HA3SP8S3Q4CXM7WVTX0SKTN9-1.0_0_1.wav",
+  "expectedPath": "01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0/01HA3SP8S3Q4CXM7WVTX0SKTN9-1.0_0_1.wav"
+}
+```
+
 ## Testing
 
 Run the test script to verify server functionality:
@@ -588,6 +731,10 @@ node test-server.js
 
 # Test specific SQLite endpoints
 node test-sqlite-endpoints.js
+
+# Test evorender endpoints
+curl http://localhost:3004/evorenders/YOUR_FOLDER_NAME/files
+curl http://localhost:3004/evorenders/YOUR_FOLDER_NAME/YOUR_ULID/1.0/0/1 -o test.wav
 ```
 
 ### Manual Testing
@@ -603,6 +750,12 @@ curl http://localhost:3004/evoruns/summary
 
 # Test database access (replace with actual folder/ULID)
 curl http://localhost:3004/evoruns/YOUR_FOLDER_NAME/genomes
+
+# Test evorender file listing
+curl http://localhost:3004/evorenders/YOUR_FOLDER_NAME/files
+
+# Test rendered WAV file download
+curl http://localhost:3004/evorenders/YOUR_FOLDER_NAME/YOUR_ULID/1.0/60/100 -o rendered.wav
 ```
 
 ## Performance Considerations
@@ -616,22 +769,27 @@ curl http://localhost:3004/evoruns/YOUR_FOLDER_NAME/genomes
 - Static files are served directly by Express for optimal performance
 - Path resolution and security checks are cached
 - GZIP compression is handled automatically by Express
+- WAV files are served with appropriate MIME types for browser compatibility
 
 ### Memory Usage
 - Decompressed data is not cached to avoid memory bloat
 - Each request decompresses data fresh from SQLite
 - Database connections pool to balance performance and memory
+- WAV files are streamed directly from disk without loading into memory
 
 ### Recommended Limits
 - Concurrent database connections: ~10 per evorun directory
 - Maximum file size served: Limited by available memory
 - Request timeout: 30 seconds for complex database queries
+- WAV file size: No artificial limits (limited by disk space and network)
 
 ## Security Considerations
 
 - **Path traversal protection** prevents access to files outside the configured root directory
+- **Evorender path security** ensures WAV files are only served from the evorenders directory
 - All file paths are resolved and validated before serving
 - SQLite databases are opened in read-only mode
+- **Parameter validation** for render parameters (duration, pitch, velocity)
 - **No authentication** is currently implemented - add as needed for production use
 - CORS is enabled for all origins (configure appropriately for production)
 
@@ -645,10 +803,12 @@ For production use, consider:
 4. **Implement rate limiting**
 5. **Add request logging**
 6. **Set up monitoring and alerting**
+7. **Validate file access permissions**
+8. **Add content-length limits for uploads**
 
 ## Directory Structure
 
-The server can handle nested directory structures:
+The server can handle nested directory structures for both evoruns and evorenders:
 
 ```
 root_directory/
@@ -659,6 +819,14 @@ root_directory/
 │   └── subcategory/
 │       └── 01GHI789...._run_name_3/
 └── 01JKL012...._run_name_4/
+
+evorenders_directory/
+├── 01HA26QRQ4835QS33VAMNJC1F6_one_comb-dur_1.0/
+│   ├── 01HA3SP8S3Q4CXM7WVTX0SKTN9-1.0_0_1.wav
+│   ├── 01HA3SP8S3Q4CXM7WVTX0SKTN9-2.0_60_100.wav
+│   └── 01HA3SP8S3Q4CXM7WVTX0SKTN9-0.5_127_127.wav
+└── 01XYZ789...._another_render_config/
+    └── 01ABC123....-3.0_72_80.wav
 ```
 
-All evorun folders will be found regardless of their depth in the directory structure.
+All evorun folders will be found regardless of their depth in the directory structure. Evorender directories are expected to be at the root level of the evorenders directory.
