@@ -836,7 +836,7 @@ app.get('/health', (req, res) => {
 });
 
 // Start the server
-app.listen(CONFIG.port, () => {
+app.listen(CONFIG.port, '0.0.0.0', () => {
   console.log(`Evorun Browser Server running on port ${CONFIG.port}`);
   console.log(`Root directory: ${CONFIG.rootDirectory}`);
   console.log(`Date granularity: ${CONFIG.dateGranularity}`);

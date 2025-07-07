@@ -4,6 +4,10 @@
   "description": "REST service offering access to data resulting from Quality Diversity search for sounds",
   "main": "evoruns-server.js",
   "scripts": {
+    "start": "node evorun-browser-server.js",
+    "dev": "node evorun-browser-server.js",
+    "docker:build": "docker build -t kromosynth-evoruns .",
+    "docker:run": "docker run -p 3004:3004 kromosynth-evoruns",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Björn Þór Jónsson <bthj@uio.no>",
