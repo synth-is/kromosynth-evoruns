@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  evorun-browser-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3004:3004"
+    environment:
+      - PORT=3004
+      - EVORUN_ROOT_DIR=/data/evoruns
+      - EVORENDERS_ROOT_DIR=/data/evorenders
+    volumes:
+      - /Users/bjornpjo/Developer/apps/kromosynth-cli/cli-app/evoruns:/data/evoruns:ro
+      - /Users/bjornpjo/Developer/apps/kromosynth-cli/cli-app/evorenders:/data/evorenders:ro
+    restart: unless-stopped
+    networks:
+      - kromosynth-network
+
+networks:
+  kromosynth-network:
+    driver: bridge
