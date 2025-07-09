@@ -112,6 +112,31 @@ async function scanEvorunDirectories(rootDir) {
   return evorunFolders;
 }
 
+// Helper function to find an evorun folder by name within the root directory
+async function findEvorunPath(rootDir, folderName) {
+  // First try direct path (for backwards compatibility)
+  const directPath = path.join(rootDir, folderName);
+  try {
+    await fs.access(directPath);
+    const stats = await fs.stat(directPath);
+    if (stats.isDirectory()) {
+      return directPath;
+    }
+  } catch (error) {
+    // Directory doesn't exist at direct path, search recursively
+  }
+  
+  // Search recursively for the folder
+  const evorunFolders = await scanEvorunDirectories(rootDir);
+  const found = evorunFolders.find(folder => folder.folderName === folderName);
+  
+  if (found) {
+    return found.fullPath;
+  }
+  
+  return null;
+}
+
 // Helper function to validate and format render parameters
 function formatRenderParams(duration, pitch, velocity) {
   // Convert to numbers and validate
@@ -306,10 +331,17 @@ app.get('/files/*', async (req, res) => {
 // Route to list files in a specific evorun directory
 app.get('/evoruns/:evorunPath/files', async (req, res) => {
   try {
-    const evorunPath = decodeURIComponent(req.params.evorunPath);
+    const evorunFolderName = decodeURIComponent(req.params.evorunPath);
     const subdirectory = req.query.subdir || '';
     
-    const targetPath = path.join(CONFIG.rootDirectory, evorunPath, subdirectory);
+    // Find the evorun directory path
+    const evorunPath = await findEvorunPath(CONFIG.rootDirectory, evorunFolderName);
+    
+    if (!evorunPath) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
+    
+    const targetPath = path.join(evorunPath, subdirectory);
     
     // Security check
     const resolvedPath = path.resolve(targetPath);
@@ -353,7 +385,7 @@ app.get('/evoruns/:evorunPath/files', async (req, res) => {
     
     res.json({
       currentPath: subdirectory,
-      evorunPath,
+      evorunPath: evorunFolderName,
       directories: directories.sort((a, b) => a.name.localeCompare(b.name)),
       files: files.sort((a, b) => a.name.localeCompare(b.name))
     });
@@ -371,8 +403,12 @@ app.get('/evoruns/:folderName/genome/:ulid', async (req, res) => {
   try {
     const { folderName, ulid } = req.params;
     
-    // Construct the evorun directory path
-    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    // Find the evorun directory path
+    const evorunPath = await findEvorunPath(CONFIG.rootDirectory, folderName);
+    
+    if (!evorunPath) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
     
     // Security check
     const resolvedPath = path.resolve(evorunPath);
@@ -380,13 +416,6 @@ app.get('/evoruns/:folderName/genome/:ulid', async (req, res) => {
     
     if (!resolvedPath.startsWith(resolvedRoot)) {
       return res.status(403).json({ error: 'Access denied: path outside root directory' });
-    }
-    
-    // Check if directory exists
-    try {
-      await fs.access(evorunPath);
-    } catch (error) {
-      return res.status(404).json({ error: 'Evorun directory not found' });
     }
     
     // Get database connection
@@ -420,8 +449,12 @@ app.get('/evoruns/:folderName/features/:ulid', async (req, res) => {
   try {
     const { folderName, ulid } = req.params;
     
-    // Construct the evorun directory path
-    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    // Find the evorun directory path
+    const evorunPath = await findEvorunPath(CONFIG.rootDirectory, folderName);
+    
+    if (!evorunPath) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
     
     // Security check
     const resolvedPath = path.resolve(evorunPath);
@@ -429,13 +462,6 @@ app.get('/evoruns/:folderName/features/:ulid', async (req, res) => {
     
     if (!resolvedPath.startsWith(resolvedRoot)) {
       return res.status(403).json({ error: 'Access denied: path outside root directory' });
-    }
-    
-    // Check if directory exists
-    try {
-      await fs.access(evorunPath);
-    } catch (error) {
-      return res.status(404).json({ error: 'Evorun directory not found' });
     }
     
     // Get database connection
@@ -469,8 +495,12 @@ app.get('/evoruns/:folderName/data/:ulid', async (req, res) => {
   try {
     const { folderName, ulid } = req.params;
     
-    // Construct the evorun directory path
-    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    // Find the evorun directory path
+    const evorunPath = await findEvorunPath(CONFIG.rootDirectory, folderName);
+    
+    if (!evorunPath) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
     
     // Security check
     const resolvedPath = path.resolve(evorunPath);
@@ -478,13 +508,6 @@ app.get('/evoruns/:folderName/data/:ulid', async (req, res) => {
     
     if (!resolvedPath.startsWith(resolvedRoot)) {
       return res.status(403).json({ error: 'Access denied: path outside root directory' });
-    }
-    
-    // Check if directory exists
-    try {
-      await fs.access(evorunPath);
-    } catch (error) {
-      return res.status(404).json({ error: 'Evorun directory not found' });
     }
     
     // Get database connection
@@ -540,8 +563,12 @@ app.get('/evoruns/:folderName/ids', async (req, res) => {
     const { folderName } = req.params;
     const { type } = req.query; // 'genomes', 'features', or 'all' (default)
     
-    // Construct the evorun directory path
-    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    // Find the evorun directory path
+    const evorunPath = await findEvorunPath(CONFIG.rootDirectory, folderName);
+    
+    if (!evorunPath) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
     
     // Security check
     const resolvedPath = path.resolve(evorunPath);
@@ -549,13 +576,6 @@ app.get('/evoruns/:folderName/ids', async (req, res) => {
     
     if (!resolvedPath.startsWith(resolvedRoot)) {
       return res.status(403).json({ error: 'Access denied: path outside root directory' });
-    }
-    
-    // Check if directory exists
-    try {
-      await fs.access(evorunPath);
-    } catch (error) {
-      return res.status(404).json({ error: 'Evorun directory not found' });
     }
     
     // Get database connection
@@ -609,8 +629,12 @@ app.get('/evoruns/:folderName/genomes', async (req, res) => {
   try {
     const { folderName } = req.params;
     
-    // Construct the evorun directory path
-    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    // Find the evorun directory path
+    const evorunPath = await findEvorunPath(CONFIG.rootDirectory, folderName);
+    
+    if (!evorunPath) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
     
     // Security check
     const resolvedPath = path.resolve(evorunPath);
@@ -656,8 +680,12 @@ app.get('/evoruns/:folderName/features', async (req, res) => {
   try {
     const { folderName } = req.params;
     
-    // Construct the evorun directory path
-    const evorunPath = path.join(CONFIG.rootDirectory, folderName);
+    // Find the evorun directory path
+    const evorunPath = await findEvorunPath(CONFIG.rootDirectory, folderName);
+    
+    if (!evorunPath) {
+      return res.status(404).json({ error: 'Evorun directory not found' });
+    }
     
     // Security check
     const resolvedPath = path.resolve(evorunPath);
