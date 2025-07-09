@@ -315,34 +315,76 @@ app.get('/files/*', async (req, res) => {
       // File not found at direct path, try recursive search
     }
     
-    // If not found directly, search recursively
+    // If not found directly, try to find via evorun folder structure
     if (!fileExists) {
-      console.log(`File not found at direct path, searching recursively for: ${requestedPath}`);
+      console.log(`File not found at direct path, searching for evorun folder: ${requestedPath}`);
       
-      try {
-        // Add timeout to prevent hanging on large directory searches
-        const searchPromise = findFileRecursively(CONFIG.rootDirectory, requestedPath);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Recursive search timeout')), 10000) // 10 second timeout
-        );
+      // Extract the evorun folder name from the requested path
+      const pathParts = requestedPath.split('/');
+      const evorunFolderName = pathParts[0];
+      
+      // Check if this looks like an evorun folder (starts with ULID pattern)
+      const ulidPattern = /^[0-9A-Z]{26}_/;
+      if (ulidPattern.test(evorunFolderName)) {
+        try {
+          // Find the actual evorun directory
+          const evorunPath = await findEvorunPath(CONFIG.rootDirectory, evorunFolderName);
+          
+          if (evorunPath) {
+            // Construct the file path within the found evorun directory
+            const remainingPath = pathParts.slice(1).join('/');
+            const candidateFilePath = path.join(evorunPath, remainingPath);
+            
+            // Security check for the candidate path
+            const candidateResolved = path.resolve(candidateFilePath);
+            if (candidateResolved.startsWith(resolvedRoot)) {
+              try {
+                const stats = await fs.stat(candidateFilePath);
+                if (stats.isFile()) {
+                  console.log(`File found in evorun directory: ${candidateFilePath}`);
+                  fullFilePath = candidateFilePath;
+                  resolvedPath = candidateResolved;
+                  fileExists = true;
+                }
+              } catch (error) {
+                // File doesn't exist at this location
+              }
+            }
+          }
+        } catch (error) {
+          console.warn(`Error finding evorun directory for ${evorunFolderName}:`, error.message);
+        }
+      }
+      
+      // If still not found, fall back to full recursive search
+      if (!fileExists) {
+        console.log(`File not found in evorun directory, doing full recursive search for: ${requestedPath}`);
         
-        fullFilePath = await Promise.race([searchPromise, timeoutPromise]);
-        
-        if (!fullFilePath) {
-          console.log(`File not found after recursive search: ${requestedPath}`);
+        try {
+          // Add timeout to prevent hanging on large directory searches
+          const searchPromise = findFileRecursively(CONFIG.rootDirectory, requestedPath);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Recursive search timeout')), 10000) // 10 second timeout
+          );
+          
+          fullFilePath = await Promise.race([searchPromise, timeoutPromise]);
+          
+          if (!fullFilePath) {
+            console.log(`File not found after recursive search: ${requestedPath}`);
+            return res.status(404).json({ error: 'File not found' });
+          }
+          
+          // Update resolved path for the found file
+          resolvedPath = path.resolve(fullFilePath);
+          
+          // Security check again for the found file
+          if (!resolvedPath.startsWith(resolvedRoot)) {
+            return res.status(403).json({ error: 'Access denied: path outside root directory' });
+          }
+        } catch (error) {
+          console.log(`Error during recursive search for ${requestedPath}:`, error.message);
           return res.status(404).json({ error: 'File not found' });
         }
-        
-        // Update resolved path for the found file
-        resolvedPath = path.resolve(fullFilePath);
-        
-        // Security check again for the found file
-        if (!resolvedPath.startsWith(resolvedRoot)) {
-          return res.status(403).json({ error: 'Access denied: path outside root directory' });
-        }
-      } catch (error) {
-        console.log(`Error during recursive search for ${requestedPath}:`, error.message);
-        return res.status(404).json({ error: 'File not found' });
       }
     }
     
