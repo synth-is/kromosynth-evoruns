@@ -293,28 +293,44 @@ app.get('/files/*', async (req, res) => {
       return res.status(400).json({ error: 'No file path specified' });
     }
     
-    // Construct the full file path
-    const fullFilePath = path.join(CONFIG.rootDirectory, requestedPath);
+    // First try the direct path (for backwards compatibility)
+    let fullFilePath = path.join(CONFIG.rootDirectory, requestedPath);
     
     // Security check: ensure the path is within the root directory
-    const resolvedPath = path.resolve(fullFilePath);
+    let resolvedPath = path.resolve(fullFilePath);
     const resolvedRoot = path.resolve(CONFIG.rootDirectory);
     
     if (!resolvedPath.startsWith(resolvedRoot)) {
       return res.status(403).json({ error: 'Access denied: path outside root directory' });
     }
     
-    // Check if file exists
+    // Check if file exists at direct path
+    let fileExists = false;
     try {
-      await fs.access(fullFilePath);
+      const stats = await fs.stat(fullFilePath);
+      if (stats.isFile()) {
+        fileExists = true;
+      }
     } catch (error) {
-      return res.status(404).json({ error: 'File not found' });
+      // File not found at direct path, try recursive search
     }
     
-    // Check if it's a file (not a directory)
-    const stats = await fs.stat(fullFilePath);
-    if (!stats.isFile()) {
-      return res.status(400).json({ error: 'Path is not a file' });
+    // If not found directly, search recursively
+    if (!fileExists) {
+      console.log(`File not found at direct path, searching recursively for: ${requestedPath}`);
+      fullFilePath = await findFileRecursively(CONFIG.rootDirectory, requestedPath);
+      
+      if (!fullFilePath) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+      
+      // Update resolved path for the found file
+      resolvedPath = path.resolve(fullFilePath);
+      
+      // Security check again for the found file
+      if (!resolvedPath.startsWith(resolvedRoot)) {
+        return res.status(403).json({ error: 'Access denied: path outside root directory' });
+      }
     }
     
     // Serve the file
@@ -871,3 +887,49 @@ app.listen(CONFIG.port, '0.0.0.0', () => {
 });
 
 module.exports = app;
+
+/**
+ * Recursively searches for a file in all subdirectories
+ * @param {string} startDirectory - The root directory to start searching from
+ * @param {string} relativePath - The relative path of the file to find
+ * @returns {Promise<string|null>} - The full path to the file if found, null otherwise
+ */
+async function findFileRecursively(startDirectory, relativePath) {
+  const targetFilename = path.basename(relativePath);
+  const targetDirPath = path.dirname(relativePath);
+  
+  async function searchInDirectory(currentDir) {
+    try {
+      const entries = await fs.readdir(currentDir, { withFileTypes: true });
+      
+      // First, check if the exact relative path exists from this directory
+      const exactPath = path.join(currentDir, relativePath);
+      try {
+        const stats = await fs.stat(exactPath);
+        if (stats.isFile()) {
+          return exactPath;
+        }
+      } catch (error) {
+        // File doesn't exist at this exact location, continue searching
+      }
+      
+      // Search in subdirectories
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const subdirPath = path.join(currentDir, entry.name);
+          const result = await searchInDirectory(subdirPath);
+          if (result) {
+            return result;
+          }
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(`Error searching in directory ${currentDir}:`, error);
+      return null;
+    }
+  }
+  
+  return await searchInDirectory(startDirectory);
+}
