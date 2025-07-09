@@ -318,18 +318,31 @@ app.get('/files/*', async (req, res) => {
     // If not found directly, search recursively
     if (!fileExists) {
       console.log(`File not found at direct path, searching recursively for: ${requestedPath}`);
-      fullFilePath = await findFileRecursively(CONFIG.rootDirectory, requestedPath);
       
-      if (!fullFilePath) {
+      try {
+        // Add timeout to prevent hanging on large directory searches
+        const searchPromise = findFileRecursively(CONFIG.rootDirectory, requestedPath);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Recursive search timeout')), 10000) // 10 second timeout
+        );
+        
+        fullFilePath = await Promise.race([searchPromise, timeoutPromise]);
+        
+        if (!fullFilePath) {
+          console.log(`File not found after recursive search: ${requestedPath}`);
+          return res.status(404).json({ error: 'File not found' });
+        }
+        
+        // Update resolved path for the found file
+        resolvedPath = path.resolve(fullFilePath);
+        
+        // Security check again for the found file
+        if (!resolvedPath.startsWith(resolvedRoot)) {
+          return res.status(403).json({ error: 'Access denied: path outside root directory' });
+        }
+      } catch (error) {
+        console.log(`Error during recursive search for ${requestedPath}:`, error.message);
         return res.status(404).json({ error: 'File not found' });
-      }
-      
-      // Update resolved path for the found file
-      resolvedPath = path.resolve(fullFilePath);
-      
-      // Security check again for the found file
-      if (!resolvedPath.startsWith(resolvedRoot)) {
-        return res.status(403).json({ error: 'Access denied: path outside root directory' });
       }
     }
     
