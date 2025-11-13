@@ -14,8 +14,8 @@ app.use(cors({
 
 // Configuration
 let CONFIG = {
-  rootDirectory: process.env.EVORUN_ROOT_DIR || '/Users/bjornpjo/Developer/apps/kromosynth-cli/cli-app/evoruns',
-  evorenderDirectory: process.env.EVORENDERS_ROOT_DIR || '/Users/bjornpjo/Developer/apps/kromosynth-cli/cli-app/evorenders',
+  rootDirectory: process.env.EVORUN_ROOT_DIR || '/Users/bjornpjo/Developer/apps/synth.is/kromosynth-cli/cli-app/evoruns',
+  evorenderDirectory: process.env.EVORENDERS_ROOT_DIR || '/Users/bjornpjo/Developer/apps/synth.is/kromosynth-cli/cli-app/evorenders',
   port: process.env.PORT || 3004,
   dateGranularity: process.env.DATE_GRANULARITY || 'month' // month, week, day
 };
@@ -453,6 +453,7 @@ app.get('/evoruns/:evorunPath/files', async (req, res) => {
 app.get('/evoruns/:folderName/genome/:ulid', async (req, res) => {
   try {
     const { folderName, ulid } = req.params;
+    const { format } = req.query; // Support format=raw for rendering service compatibility
     
     // Find the evorun directory path
     const evorunPath = await findEvorunPath(CONFIG.rootDirectory, folderName);
@@ -481,11 +482,17 @@ app.get('/evoruns/:folderName/genome/:ulid', async (req, res) => {
       return res.status(404).json({ error: `Genome not found: ${ulid}` });
     }
     
-    res.json({
-      ulid,
-      folderName,
-      genome: genomeData
-    });
+    // Return raw genome for rendering service compatibility
+    if (format === 'raw') {
+      res.json(genomeData);
+    } else {
+      // Return wrapped format for API consistency
+      res.json({
+        ulid,
+        folderName,
+        genome: genomeData
+      });
+    }
     
   } catch (error) {
     console.error('Error retrieving genome:', error);
