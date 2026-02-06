@@ -17,11 +17,13 @@ let CONFIG = {
   rootDirectory: process.env.EVORUN_ROOT_DIR
     ||
     //'/Volumes/T7/evoruns',
-    // '/Users/bjornpjo/Developer/apps/synth.is/kromosynth-cli/cli-app/evoruns',
-    '/Users/bjornpjo/QD/evoruns',
+    '/Users/bjornpjo/Developer/apps/synth.is/kromosynth-cli/cli-app/evoruns',
+    //'/Users/bjornpjo/QD/evoruns',
   evorenderDirectory: process.env.EVORENDERS_ROOT_DIR || '/Users/bjornpjo/Developer/apps/synth.is/kromosynth-cli/cli-app/evorenders',
+  syncDirectory: process.env.SYNC_ROOT_DIR || null, // Additional directory for synced evoruns from remote workers
   port: process.env.PORT || 3004,
-  dateGranularity: process.env.DATE_GRANULARITY || 'month' // month, week, day
+  dateGranularity: process.env.DATE_GRANULARITY || 'month', // month, week, day
+  syncApiKeys: (process.env.SYNC_API_KEYS || '').split(',').filter(Boolean),
 };
 
 // Middleware to parse JSON
@@ -116,26 +118,34 @@ async function scanEvorunDirectories(rootDir) {
   return evorunFolders;
 }
 
-// Helper function to find an evorun folder by name within the root directory
+// Helper function to find an evorun folder by name within the root directory (and sync directory)
 async function findEvorunPath(rootDir, folderName) {
-  // First try direct path (for backwards compatibility)
-  const directPath = path.join(rootDir, folderName);
-  try {
-    await fs.access(directPath);
-    const stats = await fs.stat(directPath);
-    if (stats.isDirectory()) {
-      return directPath;
-    }
-  } catch (error) {
-    // Directory doesn't exist at direct path, search recursively
+  // Directories to search: root + sync (if configured)
+  const searchDirs = [rootDir];
+  if (CONFIG.syncDirectory) {
+    searchDirs.push(CONFIG.syncDirectory);
   }
 
-  // Search recursively for the folder
-  const evorunFolders = await scanEvorunDirectories(rootDir);
-  const found = evorunFolders.find(folder => folder.folderName === folderName);
+  for (const dir of searchDirs) {
+    // First try direct path (for backwards compatibility)
+    const directPath = path.join(dir, folderName);
+    try {
+      await fs.access(directPath);
+      const stats = await fs.stat(directPath);
+      if (stats.isDirectory()) {
+        return directPath;
+      }
+    } catch (error) {
+      // Directory doesn't exist at direct path
+    }
 
-  if (found) {
-    return found.fullPath;
+    // Search recursively for the folder
+    const evorunFolders = await scanEvorunDirectories(dir);
+    const found = evorunFolders.find(folder => folder.folderName === folderName);
+
+    if (found) {
+      return found.fullPath;
+    }
   }
 
   return null;
@@ -215,7 +225,18 @@ app.get('/evoruns/summary', async (req, res) => {
       });
     }
 
-    const evorunFolders = await scanEvorunDirectories(CONFIG.rootDirectory);
+    let evorunFolders = await scanEvorunDirectories(CONFIG.rootDirectory);
+
+    // Also scan sync directory if configured
+    if (CONFIG.syncDirectory) {
+      try {
+        await fs.access(CONFIG.syncDirectory);
+        const syncFolders = await scanEvorunDirectories(CONFIG.syncDirectory);
+        evorunFolders = evorunFolders.concat(syncFolders);
+      } catch {
+        // Sync directory doesn't exist yet, skip
+      }
+    }
 
     // Group by date and then by name
     const groupedRuns = {};
@@ -916,12 +937,252 @@ app.get('/evorenders/:folderName/files', async (req, res) => {
   }
 });
 
+// ========================================
+// Sync API Endpoints (for receiving data from remote workers)
+// ========================================
+
+// API key authentication middleware for sync endpoints
+function syncAuth(req, res, next) {
+  if (CONFIG.syncApiKeys.length === 0) {
+    // No keys configured = sync endpoints disabled
+    return res.status(503).json({ error: 'Sync API not configured (no API keys set)' });
+  }
+  const key = req.headers['x-sync-api-key'];
+  if (!key || !CONFIG.syncApiKeys.includes(key)) {
+    return res.status(401).json({ error: 'Invalid or missing API key' });
+  }
+  next();
+}
+
+// Helper to get the sync base directory
+function getSyncBaseDir() {
+  return CONFIG.syncDirectory || CONFIG.rootDirectory;
+}
+
+// Register a new evorun on the central (creates directory structure)
+app.post('/api/sync/register/:runId', syncAuth, async (req, res) => {
+  try {
+    const { runId } = req.params;
+    const { templateName, ecosystemVariant, startedAt } = req.body;
+
+    const runDir = path.join(getSyncBaseDir(), runId);
+
+    // Security check
+    const resolvedPath = path.resolve(runDir);
+    const resolvedRoot = path.resolve(getSyncBaseDir());
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Create directory structure
+    await fs.mkdir(path.join(runDir, 'analysisResults'), { recursive: true });
+    await fs.mkdir(path.join(runDir, 'generationFeatures'), { recursive: true });
+
+    // Store metadata
+    const metadata = {
+      runId,
+      templateName,
+      ecosystemVariant,
+      startedAt,
+      registeredAt: new Date().toISOString(),
+    };
+    await fs.writeFile(
+      path.join(runDir, 'sync-metadata.json'),
+      JSON.stringify(metadata, null, 2)
+    );
+
+    console.log(`Registered synced evorun: ${runId}`);
+    res.status(201).json({ message: 'Run registered', runId });
+
+  } catch (error) {
+    console.error('Error registering sync run:', error);
+    res.status(500).json({ error: 'Failed to register run: ' + error.message });
+  }
+});
+
+// List analysis files for a run (used by worker to determine what needs uploading)
+app.get('/api/sync/analysis/:runId/list', syncAuth, async (req, res) => {
+  try {
+    const { runId } = req.params;
+    const subdir = req.query.subdir || 'analysisResults';
+
+    const targetDir = path.join(getSyncBaseDir(), runId, subdir);
+
+    // Security check
+    const resolvedPath = path.resolve(targetDir);
+    const resolvedRoot = path.resolve(getSyncBaseDir());
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    try {
+      await fs.access(targetDir);
+    } catch {
+      return res.status(404).json({ error: 'Directory not found', files: [] });
+    }
+
+    const entries = await fs.readdir(targetDir, { withFileTypes: true });
+    const files = [];
+
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        const stats = await fs.stat(path.join(targetDir, entry.name));
+        files.push({
+          name: entry.name,
+          size: stats.size,
+          modified: stats.mtime.toISOString(),
+        });
+      }
+    }
+
+    res.json({ files });
+
+  } catch (error) {
+    console.error('Error listing sync analysis files:', error);
+    res.status(500).json({ error: 'Failed to list files: ' + error.message });
+  }
+});
+
+// Upload an analysis file for a run
+// Accepts raw file body with filename and subdir as query parameters
+app.post('/api/sync/analysis/:runId', syncAuth, express.raw({ type: '*/*', limit: '50mb' }), async (req, res) => {
+  try {
+    const { runId } = req.params;
+
+    // Support both simple raw upload (filename in query) and multipart
+    const fileName = req.query.filename;
+    const subdir = req.query.subdir || 'analysisResults';
+
+    if (!fileName) {
+      // Try to parse multipart boundary from content-type
+      const contentType = req.headers['content-type'] || '';
+      if (contentType.includes('multipart/form-data')) {
+        const result = await parseMultipartSync(req.body, contentType);
+        if (result.files.length === 0) {
+          return res.status(400).json({ error: 'No files found in multipart body' });
+        }
+
+        const stored = [];
+        const effectiveSubdir = result.fields.subdir || subdir;
+        const targetDir = path.join(getSyncBaseDir(), runId, effectiveSubdir);
+
+        // Security check
+        const resolvedTarget = path.resolve(targetDir);
+        const resolvedRoot = path.resolve(getSyncBaseDir());
+        if (!resolvedTarget.startsWith(resolvedRoot)) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+
+        await fs.mkdir(targetDir, { recursive: true });
+
+        for (const file of result.files) {
+          const filePath = path.join(targetDir, path.basename(file.filename));
+          // Security: ensure file stays within target dir
+          if (!path.resolve(filePath).startsWith(resolvedTarget)) {
+            continue;
+          }
+          await fs.writeFile(filePath, file.data);
+          stored.push(file.filename);
+        }
+
+        return res.json({ stored });
+      }
+
+      return res.status(400).json({ error: 'Missing filename query parameter or multipart body' });
+    }
+
+    // Simple raw upload mode
+    const targetDir = path.join(getSyncBaseDir(), runId, subdir);
+
+    // Security checks
+    const resolvedTarget = path.resolve(targetDir);
+    const resolvedRoot = path.resolve(getSyncBaseDir());
+    if (!resolvedTarget.startsWith(resolvedRoot)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const filePath = path.join(targetDir, path.basename(fileName));
+    if (!path.resolve(filePath).startsWith(resolvedTarget)) {
+      return res.status(403).json({ error: 'Access denied: invalid filename' });
+    }
+
+    await fs.mkdir(targetDir, { recursive: true });
+    await fs.writeFile(filePath, req.body);
+
+    console.log(`Synced analysis file: ${runId}/${subdir}/${fileName} (${req.body.length} bytes)`);
+    res.json({ stored: [fileName] });
+
+  } catch (error) {
+    console.error('Error uploading sync analysis file:', error);
+    res.status(500).json({ error: 'Failed to upload file: ' + error.message });
+  }
+});
+
+/**
+ * Simple multipart form-data parser for sync uploads.
+ * Handles the format produced by SyncManager._uploadAnalysisFile().
+ */
+function parseMultipartSync(body, contentType) {
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;\s]+))/);
+  if (!boundaryMatch) {
+    return { files: [], fields: {} };
+  }
+  const boundary = boundaryMatch[1] || boundaryMatch[2];
+  const parts = [];
+  const fields = {};
+
+  // Split by boundary
+  const boundaryBuffer = Buffer.from(`--${boundary}`);
+  const endBoundary = Buffer.from(`--${boundary}--`);
+
+  let buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  let pos = 0;
+
+  while (pos < buf.length) {
+    const boundaryIdx = buf.indexOf(boundaryBuffer, pos);
+    if (boundaryIdx === -1) break;
+
+    const nextBoundaryIdx = buf.indexOf(boundaryBuffer, boundaryIdx + boundaryBuffer.length + 2);
+    if (nextBoundaryIdx === -1 && buf.indexOf(endBoundary, boundaryIdx + boundaryBuffer.length) === -1) break;
+
+    const partEnd = nextBoundaryIdx !== -1 ? nextBoundaryIdx : buf.indexOf(endBoundary, boundaryIdx + boundaryBuffer.length);
+    if (partEnd === -1) break;
+
+    const partData = buf.slice(boundaryIdx + boundaryBuffer.length + 2, partEnd - 2); // strip \r\n
+    const headerEndIdx = partData.indexOf('\r\n\r\n');
+    if (headerEndIdx !== -1) {
+      const headers = partData.slice(0, headerEndIdx).toString();
+      const content = partData.slice(headerEndIdx + 4);
+
+      const nameMatch = headers.match(/name="([^"]+)"/);
+      const filenameMatch = headers.match(/filename="([^"]+)"/);
+
+      if (filenameMatch) {
+        parts.push({
+          name: nameMatch ? nameMatch[1] : 'file',
+          filename: filenameMatch[1],
+          data: content,
+        });
+      } else if (nameMatch) {
+        fields[nameMatch[1]] = content.toString().trim();
+      }
+    }
+
+    pos = partEnd;
+  }
+
+  return { files: parts, fields };
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    config: CONFIG
+    config: {
+      ...CONFIG,
+      syncApiKeys: CONFIG.syncApiKeys.length > 0 ? `${CONFIG.syncApiKeys.length} key(s) configured` : 'none',
+    }
   });
 });
 

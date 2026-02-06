@@ -4,7 +4,7 @@
   "description": "REST service offering access to data resulting from Quality Diversity search for sounds",
   "main": "evoruns-server.js",
   "scripts": {
-    "start": "node evorun-browser-server.js",
+    "start": "PORT=4004 node evorun-browser-server.js",
     "dev": "node evorun-browser-server.js",
     "docker:build": "docker build -t kromosynth-evoruns .",
     "docker:run": "docker run -p 3004:3004 kromosynth-evoruns",
