@@ -141,7 +141,14 @@ async function findEvorunPath(rootDir, folderName) {
 
     // Search recursively for the folder
     const evorunFolders = await scanEvorunDirectories(dir);
-    const found = evorunFolders.find(folder => folder.folderName === folderName);
+
+    // First try exact match (full folder name including ULID)
+    let found = evorunFolders.find(folder => folder.folderName === folderName);
+
+    // If not found, try matching by suffix (evorun name without ULID prefix)
+    if (!found) {
+      found = evorunFolders.find(folder => extractEvorunName(folder.folderName) === folderName);
+    }
 
     if (found) {
       return found.fullPath;
