@@ -1,4 +1,5 @@
 // REST server for browsing evolutionary runs with configurable root directory
+require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');

@@ -13,6 +13,7 @@
   "author": "Björn Þór Jónsson <bthj@uio.no>",
   "license": "AGPL-3.0-or-later",
   "dependencies": {
+    "dotenv": "^16.0.0",
     "@google-cloud/firestore": "^6.7.0",
     "better-sqlite3": "^11.10.0",
     "body-parser": "^1.20.2",
