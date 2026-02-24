@@ -982,9 +982,8 @@ app.post('/api/sync/register/:runId', syncAuth, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Create directory structure
+    // Create directory structure (only analysisResults; other dirs created on demand during upload)
     await fs.mkdir(path.join(runDir, 'analysisResults'), { recursive: true });
-    await fs.mkdir(path.join(runDir, 'generationFeatures'), { recursive: true });
 
     // Store metadata
     const metadata = {
