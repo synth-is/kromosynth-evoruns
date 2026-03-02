@@ -1052,7 +1052,7 @@ app.get('/api/sync/analysis/:runId/list', syncAuth, async (req, res) => {
 
 // Upload an analysis file for a run
 // Accepts raw file body with filename and subdir as query parameters
-app.post('/api/sync/analysis/:runId', syncAuth, express.raw({ type: '*/*', limit: '50mb' }), async (req, res) => {
+app.post('/api/sync/analysis/:runId', syncAuth, express.raw({ type: '*/*', limit: '200mb' }), async (req, res) => {
   try {
     const { runId } = req.params;
 
@@ -1180,6 +1180,15 @@ function parseMultipartSync(body, contentType) {
 
   return { files: parts, fields };
 }
+
+// Error handler for body-parser errors (PayloadTooLargeError etc.)
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.too.large') {
+    console.warn(`Payload too large for ${req.method} ${req.path} (${req.headers['content-length'] || '?'} bytes)`);
+    return res.status(413).json({ error: 'Payload too large', limit: '200mb' });
+  }
+  next(err);
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
